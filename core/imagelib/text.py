@@ -22,26 +22,26 @@ def get_text_image( shape, text, color=(1,1,1), border=0.2, font=None):
         canvas = Image.new('RGB', (w,h) , (0,0,0) )
         draw = ImageDraw.Draw(canvas)
         offset = ( 0, 0)
-        draw.text(offset, text, font=pil_font, fill=tuple((np.array(color)*255).astype(np.int)) )
+        draw.text(offset, text, font=pil_font, fill=tuple((array(color)*255).astype(int)) )
 
-        result = np.asarray(canvas) / 255
+        result = asarray(canvas) / 255
 
         if c > 3:
-            result = np.concatenate ( (result, np.ones ((h,w,c-3)) ), axis=-1 )
+            result = concatenate ( (result, ones ((h,w,c-3)) ), axis=-1 )
         elif c < 3:
             result = result[...,0:c]
         return result
     except:
-        return np.zeros ( (h,w,c) )
+        return zeros ( (h,w,c) )
 
 def draw_text( image, rect, text, color=(1,1,1), border=0.2, font=None):
     h,w,c = image.shape
 
     l,t,r,b = rect
-    l = np.clip (l, 0, w-1)
-    r = np.clip (r, 0, w-1)
-    t = np.clip (t, 0, h-1)
-    b = np.clip (b, 0, h-1)
+    l = clip (l, 0, w-1)
+    r = clip (r, 0, w-1)
+    t = clip (t, 0, h-1)
+    b = clip (b, 0, h-1)
 
     image[t:b, l:r] += get_text_image (  (b-t,r-l,c) , text, color, border, font )
 
@@ -59,6 +59,6 @@ def draw_text_lines (image, rect, text_lines, color=(1,1,1), border=0.2, font=No
         draw_text (image, (l, i*h_per_line, r, (i+1)*h_per_line), text_lines[i], color, border, font)
 
 def get_draw_text_lines ( image, rect, text_lines, color=(1,1,1), border=0.2, font=None):
-    image = np.zeros ( image.shape, dtype=np.float )
+    image = zeros ( image.shape, dtype=float )
     draw_text_lines ( image, rect, text_lines, color, border, font)
     return image
