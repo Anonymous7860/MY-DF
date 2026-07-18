@@ -361,7 +361,7 @@ def get_rect_from_landmarks(image_landmarks):
 def expand_eyebrows(lmrks, eyebrows_expand_mod=1.0):
     if len(lmrks) != 68:
         raise Exception('works only with 68 landmarks')
-    lmrks = np.array( lmrks.copy(), dtype=np.int )
+    lmrks = np.array( lmrks.copy(), dtype=int )
 
     # #nose
     ml_pnt = (lmrks[36] + lmrks[0]) // 2
