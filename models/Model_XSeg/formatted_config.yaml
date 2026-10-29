@@ -1,0 +1,8 @@
+basic_param:
+  archi: current
+  resolution: 256
+  face_type: wf
+  use_fp16: false
+  pretrain: false
+  teeth_mode: false
+  batch_size: 8

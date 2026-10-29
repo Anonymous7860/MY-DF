@@ -1,0 +1,14 @@
+torch
+torchvision
+numpy
+tqdm
+opencv-python
+ffmpeg-python
+scikit-image
+scipy
+colorama
+h5py
+numexpr
+PyYAML
+jsonschema
+protobuf
