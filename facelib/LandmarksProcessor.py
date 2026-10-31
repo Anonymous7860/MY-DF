@@ -311,17 +311,8 @@ def get_transform_mat (image_landmarks, output_size, face_type, scale=1.0):
         hvec /= hvec_len        
 
         yaw *= np.abs(math.tanh(yaw*2)) # Damp near zero
-
-        h_shift = hvec * (yaw * hvec_len / 2.0)
-
-        # Match DeepFaceLab-main: clamp the horizontal shift so HEAD crop
-        # doesn't overreact to yaw and push the face off-center.
-        max_shift = mod * 0.30
-        shift_magnitude = npla.norm(h_shift)
-        if shift_magnitude > max_shift:
-            h_shift = h_shift * (max_shift / shift_magnitude)
-
-        g_c -= h_shift
+        
+        g_c -= hvec * (yaw * hvec_len / 2.0)                     
 
         # adjust vertical offset for HEAD, 50% below
         vvec = (g_p[0]-g_p[3]).astype(np.float32)
@@ -355,7 +346,7 @@ def get_transform_mat (image_landmarks, output_size, face_type, scale=1.0):
 
     # calc affine transform from 3 global space points to 3 local space points size of 'output_size'
     pts2 = np.float32(( (0,0),(output_size,0),(output_size,output_size) ))
-    mat = cv2.getAffineTransform(l_t.astype(np.float32), pts2)
+    mat = cv2.getAffineTransform(l_t,pts2)
     return mat
 
 def get_rect_from_landmarks(image_landmarks):
@@ -370,7 +361,7 @@ def get_rect_from_landmarks(image_landmarks):
 def expand_eyebrows(lmrks, eyebrows_expand_mod=1.0):
     if len(lmrks) != 68:
         raise Exception('works only with 68 landmarks')
-    lmrks = np.array( lmrks.copy(), dtype=int )
+    lmrks = np.array( lmrks.copy(), dtype=np.int )
 
     # #nose
     ml_pnt = (lmrks[36] + lmrks[0]) // 2
@@ -391,8 +382,10 @@ def expand_eyebrows(lmrks, eyebrows_expand_mod=1.0):
     # Adjust eyebrow arrays
     lmrks[17:22] = top_l + eyebrows_expand_mod * 0.5 * (top_l - bot_l)
     lmrks[22:27] = top_r + eyebrows_expand_mod * 0.5 * (top_r - bot_r)
-
     return lmrks
+
+
+
 
 def get_image_hull_mask (image_shape, image_landmarks, eyebrows_expand_mod=1.0 ):
     hull_mask = np.zeros(image_shape[0:2]+(1,),dtype=np.float32)
@@ -423,7 +416,7 @@ def get_image_eye_mask (image_shape, image_landmarks):
 
     hull_mask = np.zeros( (h,w,1),dtype=np.float32)
 
-    image_landmarks = image_landmarks.astype(int)
+    image_landmarks = image_landmarks.astype(np.int)
 
     cv2.fillConvexPoly( hull_mask, cv2.convexHull( image_landmarks[36:42]), (1,) )
     cv2.fillConvexPoly( hull_mask, cv2.convexHull( image_landmarks[42:48]), (1,) )
@@ -446,9 +439,9 @@ def get_image_mouth_mask (image_shape, image_landmarks):
 
     hull_mask = np.zeros( (h,w,1),dtype=np.float32)
 
-    image_landmarks = image_landmarks.astype(int)
+    image_landmarks = image_landmarks.astype(np.int)
 
-    cv2.fillConvexPoly( hull_mask, cv2.convexHull( image_landmarks[48:60]), (1,) )
+    cv2.fillConvexPoly( hull_mask, cv2.convexHull( image_landmarks[60:]), (1,) )
 
     dilate = h // 32
     hull_mask = cv2.dilate(hull_mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE,(dilate,dilate)), iterations = 1 )
@@ -459,24 +452,6 @@ def get_image_mouth_mask (image_shape, image_landmarks):
     hull_mask = hull_mask[...,None]
 
     return hull_mask
-
-
-def get_image_inner_mouth_mask(image_shape, image_landmarks):
-    """Build a soft oral-cavity mask from the eight inner-mouth landmarks."""
-    if len(image_landmarks) != 68:
-        raise Exception('get_image_inner_mouth_mask works only with 68 landmarks')
-
-    h, w, c = image_shape
-    inner_mask = np.zeros((h, w, 1), dtype=np.float32)
-    inner_points = image_landmarks.astype(int)[60:68]
-    cv2.fillConvexPoly(inner_mask, cv2.convexHull(inner_points), (1,))
-
-    blur = max(1, h // 128)
-    blur = blur + (1 - blur % 2)
-    if blur > 1:
-        inner_mask = cv2.GaussianBlur(inner_mask, (blur, blur), 0)
-        inner_mask = inner_mask[..., None]
-    return inner_mask
     
 def alpha_to_color (img_alpha, color):
     if len(img_alpha.shape) == 2:
@@ -576,32 +551,52 @@ def get_cmask (image_shape, lmrks, eyebrows_expand_mod=1.0):
 
     eyes_mask = gdf('eyes',eyes_thickness)
     eyes_mask = 1-np.clip( eyes_mask/ eyes_fall_dist, 0, 1)
+    #eyes_mask = np.clip ( 1- ( np.sqrt( np.maximum(eyes_mask,0) ) / eyes_fall_dist ), 0, 1)
+    #eyes_mask = np.clip ( 1- ( np.cbrt( np.maximum(eyes_mask,0) ) / eyes_fall_dist ), 0, 1)
 
     brows_mask = gdf('brows', brows_thickness)
     brows_mask = 1-np.clip( brows_mask / brows_fall_dist, 0, 1)
+    #brows_mask = np.clip ( 1- ( np.sqrt( np.maximum(brows_mask,0) ) / brows_fall_dist ), 0, 1)
 
     mouth_mask = gdf('mouth', mouth_thickness)
     mouth_mask = 1-np.clip( mouth_mask / mouth_fall_dist, 0, 1)
+    #mouth_mask = np.clip ( 1- ( np.sqrt( np.maximum(mouth_mask,0) ) / mouth_fall_dist ), 0, 1)
 
     def blend(a,b,k):
         x = np.clip ( 0.5+0.5*(b-a)/k, 0.0, 1.0 )
         return (a-b)*x+b - k*x*(1.0-x)
 
 
+    #nose_mask = (a-b)*x+b - k*x*(1.0-x)
+
+    #nose_mask = np.minimum (up_nose_mask , down_nose_mask )
+    #nose_mask = 1-np.clip( nose_mask / nose_fall_dist, 0, 1)
+
     nose_mask = blend ( gdf('up_nose', nose_thickness), gdf('down_nose', nose_thickness), nose_thickness*3 )
     nose_mask = 1-np.clip( nose_mask / nose_fall_dist, 0, 1)
 
     up_nose_mask = gdf('up_nose', nose_thickness)
     up_nose_mask = 1-np.clip( up_nose_mask / nose_fall_dist, 0, 1)
+    #up_nose_mask = np.clip ( 1- ( np.cbrt( np.maximum(up_nose_mask,0) ) / nose_fall_dist ), 0, 1)
 
     down_nose_mask = gdf('down_nose', nose_thickness)
     down_nose_mask = 1-np.clip( down_nose_mask / nose_fall_dist, 0, 1)
+    #down_nose_mask = np.clip ( 1- ( np.cbrt( np.maximum(down_nose_mask,0) ) / nose_fall_dist ), 0, 1)
+
+    #nose_mask = np.clip( up_nose_mask + down_nose_mask, 0, 1 )
+    #nose_mask /= np.max(nose_mask)
+    #nose_mask = np.maximum (up_nose_mask , down_nose_mask )
+    #nose_mask = down_nose_mask
+
+    #nose_mask = np.zeros_like(nose_mask)
 
     eyes_mask = eyes_mask * (1-mouth_mask)
     nose_mask = nose_mask * (1-eyes_mask)
 
     hull_mask = hull[...,0].copy()
     hull_mask = hull_mask * (1-eyes_mask) * (1-brows_mask) * (1-nose_mask) * (1-mouth_mask)
+
+    #eyes_mask = eyes_mask * (1-nose_mask)
 
     mouth_mask= mouth_mask * (1-nose_mask)
 
@@ -613,8 +608,11 @@ def get_cmask (image_shape, lmrks, eyebrows_expand_mod=1.0):
     nose_mask = alpha_to_color(nose_mask, (0,1,1) )
     mouth_mask = alpha_to_color(mouth_mask, (0,0,1) )
 
+    #nose_mask = np.maximum( up_nose_mask, down_nose_mask )
+
     result = hull_mask + mouth_mask+ nose_mask + brows_mask  + eyes_mask
     result *= hull
+    #result = np.clip (result, 0, 1)
     return result
 
 def blur_image_hull_mask (hull_mask):
@@ -690,7 +688,7 @@ def draw_landmarks (image, image_landmarks, color=(0,255,0), draw_circles=True, 
     if len(image_landmarks) != 68:
         raise Exception('get_image_eye_mask works only with 68 landmarks')
 
-    int_lmrks = np.array(image_landmarks, dtype=int)
+    int_lmrks = np.array(image_landmarks, dtype=np.int)
 
     jaw = int_lmrks[slice(*landmarks_68_pt["jaw"])]
     right_eyebrow = int_lmrks[slice(*landmarks_68_pt["right_eyebrow"])]
@@ -771,3 +769,132 @@ def estimate_pitch_yaw_roll(aligned_landmarks, size=256):
     roll  = np.clip ( roll,  -half_pi, half_pi )
 
     return -pitch, yaw, roll
+
+#if remove_align:
+#    bbox = transform_points ( [ (0,0), (0,output_size), (output_size, output_size), (output_size,0) ], mat, True)
+#    #import code
+#    #code.interact(local=dict(globals(), **locals()))
+#    area = mathlib.polygon_area(bbox[:,0], bbox[:,1] )
+#    side = math.sqrt(area) / 2
+#    center = transform_points ( [(output_size/2,output_size/2)], mat, True)
+#    pts1 = np.float32(( center+[-side,-side], center+[side,-side], center+[side,-side] ))
+#    pts2 = np.float32([[0,0],[output_size,0],[0,output_size]])
+#    mat = cv2.getAffineTransform(pts1,pts2)
+#if full_face_align_top and (face_type == FaceType.FULL or face_type == FaceType.FULL_NO_ALIGN):
+#    #lmrks2 = expand_eyebrows(image_landmarks)
+#    #lmrks2_ = transform_points( [ lmrks2[19], lmrks2[24] ], mat, False )
+#    #y_diff = np.float32( (0,np.min(lmrks2_[:,1])) )
+#    #y_diff = transform_points( [ np.float32( (0,0) ), y_diff], mat, True)
+#    #y_diff = y_diff[1]-y_diff[0]
+#
+#    x_diff = np.float32((0,0))
+#
+#    lmrks2_ = transform_points( [ image_landmarks[0], image_landmarks[16] ], mat, False )
+#    if lmrks2_[0,0] < 0:
+#        x_diff = lmrks2_[0,0]
+#        x_diff = transform_points( [ np.float32( (0,0) ), np.float32((x_diff,0)) ], mat, True)
+#        x_diff = x_diff[1]-x_diff[0]
+#    elif lmrks2_[1,0] >= output_size:
+#        x_diff = lmrks2_[1,0]-(output_size-1)
+#        x_diff = transform_points( [ np.float32( (0,0) ), np.float32((x_diff,0)) ], mat, True)
+#        x_diff = x_diff[1]-x_diff[0]
+#
+#    mat = cv2.getAffineTransform( l_t+y_diff+x_diff ,pts2)
+
+
+"""
+def get_averaged_transform_mat (img_landmarks,
+                                img_landmarks_prev,
+                                img_landmarks_next,
+                                average_frame_count,
+                                average_center_frame_count,
+                                output_size, face_type, scale=1.0):
+
+    l_c_list = []
+    tb_diag_vec_list = []
+    bt_diag_vec_list = []
+    mod_list = []
+
+    count = max(average_frame_count,average_center_frame_count)
+    for i in range ( -count, count+1, 1 ):
+        if i < 0:
+            lmrks = img_landmarks_prev[i] if -i < len(img_landmarks_prev) else None
+        elif i > 0:
+            lmrks = img_landmarks_next[i] if i < len(img_landmarks_next) else None
+        else:
+            lmrks = img_landmarks
+
+        if lmrks is None:
+            continue
+
+        l_c, tb_diag_vec, bt_diag_vec, mod = get_transform_mat_data (lmrks, face_type, scale=scale)
+
+        if i >= -average_frame_count and i <= average_frame_count:
+            tb_diag_vec_list.append(tb_diag_vec)
+            bt_diag_vec_list.append(bt_diag_vec)
+            mod_list.append(mod)
+
+        if i >= -average_center_frame_count and i <= average_center_frame_count:
+            l_c_list.append(l_c)
+
+    tb_diag_vec = np.mean( np.array(tb_diag_vec_list), axis=0 )
+    bt_diag_vec = np.mean( np.array(bt_diag_vec_list), axis=0 )
+    mod         = np.mean( np.array(mod_list), axis=0 )
+    l_c         = np.mean( np.array(l_c_list), axis=0 )
+
+    return get_transform_mat_by_data (l_c, tb_diag_vec, bt_diag_vec, mod, output_size, face_type)
+
+
+def get_transform_mat (image_landmarks, output_size, face_type, scale=1.0):
+    if not isinstance(image_landmarks, np.ndarray):
+        image_landmarks = np.array (image_landmarks)
+
+    # get face padding value for FaceType
+    padding, remove_align = FaceType_to_padding_remove_align.get(face_type, 0.0)
+
+    # estimate landmarks transform from global space to local aligned space with bounds [0..1]
+    mat = umeyama( np.concatenate ( [ image_landmarks[17:49] , image_landmarks[54:55] ] ) , landmarks_2D_new, True)[0:2]
+
+    # get corner points in global space
+    l_p = transform_points (  np.float32([(0,0),(1,0),(1,1),(0,1),(0.5,0.5)]) , mat, True)
+    l_c = l_p[4]
+
+    # calc diagonal vectors between corners in global space
+    tb_diag_vec = (l_p[2]-l_p[0]).astype(np.float32)
+    tb_diag_vec /= npla.norm(tb_diag_vec)
+    bt_diag_vec = (l_p[1]-l_p[3]).astype(np.float32)
+    bt_diag_vec /= npla.norm(bt_diag_vec)
+
+    # calc modifier of diagonal vectors for scale and padding value
+    mod = (1.0 / scale)* ( npla.norm(l_p[0]-l_p[2])*(padding*np.sqrt(2.0) + 0.5) )
+
+    # calc 3 points in global space to estimate 2d affine transform
+    if not remove_align:
+        l_t = np.array( [ np.round( l_c - tb_diag_vec*mod ),
+                          np.round( l_c + bt_diag_vec*mod ),
+                          np.round( l_c + tb_diag_vec*mod ) ] )
+    else:
+        # remove_align - face will be centered in the frame but not aligned
+        l_t = np.array( [ np.round( l_c - tb_diag_vec*mod ),
+                          np.round( l_c + bt_diag_vec*mod ),
+                          np.round( l_c + tb_diag_vec*mod ),
+                          np.round( l_c - bt_diag_vec*mod ),
+                         ] )
+
+        # get area of face square in global space
+        area = mathlib.polygon_area(l_t[:,0], l_t[:,1] )
+
+        # calc side of square
+        side = np.float32(math.sqrt(area) / 2)
+
+        # calc 3 points with unrotated square
+        l_t = np.array( [ np.round( l_c + [-side,-side] ),
+                          np.round( l_c + [ side,-side] ),
+                          np.round( l_c + [ side, side] ) ] )
+
+    # calc affine transform from 3 global space points to 3 local space points size of 'output_size'
+    pts2 = np.float32(( (0,0),(output_size,0),(output_size,output_size) ))
+    mat = cv2.getAffineTransform(l_t,pts2)
+
+    return mat
+"""

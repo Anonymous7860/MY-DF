@@ -1,302 +1,322 @@
+import operator
 from pathlib import Path
 
 import cv2
 import numpy as np
-import torch
-import torch.nn.functional as F
 
 from core.leras import nn
 
-
-def _resize2d_bilinear(x, scale=2):
-    """Match TensorFlow 1.x bilinear resizing used to train the supplied weights."""
-    height, width = x.shape[-2:]
-    output_height = height * scale
-    output_width = width * scale
-    dtype = x.dtype
-    device = x.device
-
-    source_y = torch.arange(output_height, dtype=torch.float32, device=device) / scale
-    y0 = torch.floor(source_y).long().clamp(0, height - 1)
-    y1 = (y0 + 1).clamp(max=height - 1)
-    fraction_y = (source_y - y0.float()).to(dtype).view(1, 1, output_height, 1)
-
-    source_x = torch.arange(output_width, dtype=torch.float32, device=device) / scale
-    x0 = torch.floor(source_x).long().clamp(0, width - 1)
-    x1 = (x0 + 1).clamp(max=width - 1)
-    fraction_x = (source_x - x0.float()).to(dtype).view(1, 1, 1, output_width)
-
-    rows = x.index_select(2, y0) * (1 - fraction_y) + x.index_select(2, y1) * fraction_y
-    return rows.index_select(3, x0) * (1 - fraction_x) + rows.index_select(3, x1) * fraction_x
-
-
 class FaceEnhancer(object):
-    """Run the pretrained x4 face-enhancement network on BGR images."""
-
+    """
+    x4 face enhancer
+    """
     def __init__(self, place_model_on_cpu=False, run_on_cpu=False):
-        nn.initialize()
+        nn.initialize(data_format="NHWC")
+        tf = nn.tf
 
-        class FaceEnhancerModel(nn.ModelBase):
-            def __init__(self, name="FaceEnhancer"):
+        class FaceEnhancer (nn.ModelBase):
+            def __init__(self, name='FaceEnhancer'):
                 super().__init__(name=name)
 
             def on_build(self):
-                self.conv1 = nn.Conv2D(3, 64, kernel_size=3, strides=1, padding="SAME")
+                self.conv1 = nn.Conv2D (3, 64, kernel_size=3, strides=1, padding='SAME')
 
-                self.dense1 = nn.Dense(1, 64, use_bias=False)
-                self.dense2 = nn.Dense(1, 64, use_bias=False)
+                self.dense1 = nn.Dense (1, 64, use_bias=False)
+                self.dense2 = nn.Dense (1, 64, use_bias=False)
 
-                self.e0_conv0 = nn.Conv2D(64, 64, kernel_size=3, strides=1, padding="SAME")
-                self.e0_conv1 = nn.Conv2D(64, 64, kernel_size=3, strides=1, padding="SAME")
+                self.e0_conv0 = nn.Conv2D (64, 64, kernel_size=3, strides=1, padding='SAME')
+                self.e0_conv1 = nn.Conv2D (64, 64, kernel_size=3, strides=1, padding='SAME')
 
-                self.e1_conv0 = nn.Conv2D(64, 112, kernel_size=3, strides=1, padding="SAME")
-                self.e1_conv1 = nn.Conv2D(112, 112, kernel_size=3, strides=1, padding="SAME")
+                self.e1_conv0 = nn.Conv2D (64, 112, kernel_size=3, strides=1, padding='SAME')
+                self.e1_conv1 = nn.Conv2D (112, 112, kernel_size=3, strides=1, padding='SAME')
 
-                self.e2_conv0 = nn.Conv2D(112, 192, kernel_size=3, strides=1, padding="SAME")
-                self.e2_conv1 = nn.Conv2D(192, 192, kernel_size=3, strides=1, padding="SAME")
+                self.e2_conv0 = nn.Conv2D (112, 192, kernel_size=3, strides=1, padding='SAME')
+                self.e2_conv1 = nn.Conv2D (192, 192, kernel_size=3, strides=1, padding='SAME')
 
-                self.e3_conv0 = nn.Conv2D(192, 336, kernel_size=3, strides=1, padding="SAME")
-                self.e3_conv1 = nn.Conv2D(336, 336, kernel_size=3, strides=1, padding="SAME")
+                self.e3_conv0 = nn.Conv2D (192, 336, kernel_size=3, strides=1, padding='SAME')
+                self.e3_conv1 = nn.Conv2D (336, 336, kernel_size=3, strides=1, padding='SAME')
 
-                self.e4_conv0 = nn.Conv2D(336, 512, kernel_size=3, strides=1, padding="SAME")
-                self.e4_conv1 = nn.Conv2D(512, 512, kernel_size=3, strides=1, padding="SAME")
+                self.e4_conv0 = nn.Conv2D (336, 512, kernel_size=3, strides=1, padding='SAME')
+                self.e4_conv1 = nn.Conv2D (512, 512, kernel_size=3, strides=1, padding='SAME')
 
-                self.center_conv0 = nn.Conv2D(512, 512, kernel_size=3, strides=1, padding="SAME")
-                self.center_conv1 = nn.Conv2D(512, 512, kernel_size=3, strides=1, padding="SAME")
-                self.center_conv2 = nn.Conv2D(512, 512, kernel_size=3, strides=1, padding="SAME")
-                self.center_conv3 = nn.Conv2D(512, 512, kernel_size=3, strides=1, padding="SAME")
+                self.center_conv0 = nn.Conv2D (512, 512, kernel_size=3, strides=1, padding='SAME')
+                self.center_conv1 = nn.Conv2D (512, 512, kernel_size=3, strides=1, padding='SAME')
+                self.center_conv2 = nn.Conv2D (512, 512, kernel_size=3, strides=1, padding='SAME')
+                self.center_conv3 = nn.Conv2D (512, 512, kernel_size=3, strides=1, padding='SAME')
 
-                self.d4_conv0 = nn.Conv2D(1024, 512, kernel_size=3, strides=1, padding="SAME")
-                self.d4_conv1 = nn.Conv2D(512, 512, kernel_size=3, strides=1, padding="SAME")
+                self.d4_conv0 = nn.Conv2D (1024, 512, kernel_size=3, strides=1, padding='SAME')
+                self.d4_conv1 = nn.Conv2D (512, 512, kernel_size=3, strides=1, padding='SAME')
 
-                self.d3_conv0 = nn.Conv2D(848, 512, kernel_size=3, strides=1, padding="SAME")
-                self.d3_conv1 = nn.Conv2D(512, 512, kernel_size=3, strides=1, padding="SAME")
+                self.d3_conv0 = nn.Conv2D (848, 512, kernel_size=3, strides=1, padding='SAME')
+                self.d3_conv1 = nn.Conv2D (512, 512, kernel_size=3, strides=1, padding='SAME')
 
-                self.d2_conv0 = nn.Conv2D(704, 288, kernel_size=3, strides=1, padding="SAME")
-                self.d2_conv1 = nn.Conv2D(288, 288, kernel_size=3, strides=1, padding="SAME")
+                self.d2_conv0 = nn.Conv2D (704, 288, kernel_size=3, strides=1, padding='SAME')
+                self.d2_conv1 = nn.Conv2D (288, 288, kernel_size=3, strides=1, padding='SAME')
 
-                self.d1_conv0 = nn.Conv2D(400, 160, kernel_size=3, strides=1, padding="SAME")
-                self.d1_conv1 = nn.Conv2D(160, 160, kernel_size=3, strides=1, padding="SAME")
+                self.d1_conv0 = nn.Conv2D (400, 160, kernel_size=3, strides=1, padding='SAME')
+                self.d1_conv1 = nn.Conv2D (160, 160, kernel_size=3, strides=1, padding='SAME')
 
-                self.d0_conv0 = nn.Conv2D(224, 96, kernel_size=3, strides=1, padding="SAME")
-                self.d0_conv1 = nn.Conv2D(96, 96, kernel_size=3, strides=1, padding="SAME")
+                self.d0_conv0 = nn.Conv2D (224, 96, kernel_size=3, strides=1, padding='SAME')
+                self.d0_conv1 = nn.Conv2D (96, 96, kernel_size=3, strides=1, padding='SAME')
 
-                self.out1x_conv0 = nn.Conv2D(96, 48, kernel_size=3, strides=1, padding="SAME")
-                self.out1x_conv1 = nn.Conv2D(48, 3, kernel_size=3, strides=1, padding="SAME")
+                self.out1x_conv0 = nn.Conv2D (96, 48, kernel_size=3, strides=1, padding='SAME')
+                self.out1x_conv1 = nn.Conv2D (48, 3, kernel_size=3, strides=1, padding='SAME')
 
-                self.dec2x_conv0 = nn.Conv2D(96, 96, kernel_size=3, strides=1, padding="SAME")
-                self.dec2x_conv1 = nn.Conv2D(96, 96, kernel_size=3, strides=1, padding="SAME")
+                self.dec2x_conv0 = nn.Conv2D (96, 96, kernel_size=3, strides=1, padding='SAME')
+                self.dec2x_conv1 = nn.Conv2D (96, 96, kernel_size=3, strides=1, padding='SAME')
 
-                self.out2x_conv0 = nn.Conv2D(96, 48, kernel_size=3, strides=1, padding="SAME")
-                self.out2x_conv1 = nn.Conv2D(48, 3, kernel_size=3, strides=1, padding="SAME")
+                self.out2x_conv0 = nn.Conv2D (96, 48, kernel_size=3, strides=1, padding='SAME')
+                self.out2x_conv1 = nn.Conv2D (48, 3, kernel_size=3, strides=1, padding='SAME')
 
-                self.dec4x_conv0 = nn.Conv2D(96, 72, kernel_size=3, strides=1, padding="SAME")
-                self.dec4x_conv1 = nn.Conv2D(72, 72, kernel_size=3, strides=1, padding="SAME")
+                self.dec4x_conv0 = nn.Conv2D (96, 72, kernel_size=3, strides=1, padding='SAME')
+                self.dec4x_conv1 = nn.Conv2D (72, 72, kernel_size=3, strides=1, padding='SAME')
 
-                self.out4x_conv0 = nn.Conv2D(72, 36, kernel_size=3, strides=1, padding="SAME")
-                self.out4x_conv1 = nn.Conv2D(36, 3, kernel_size=3, strides=1, padding="SAME")
+                self.out4x_conv0 = nn.Conv2D (72, 36, kernel_size=3, strides=1, padding='SAME')
+                self.out4x_conv1 = nn.Conv2D (36, 3 , kernel_size=3, strides=1, padding='SAME')
 
-            def forward(self, bgr, param, param1):
+            def forward(self, inp):
+                bgr, param, param1 = inp
+
                 x = self.conv1(bgr)
-                a = self.dense1(param).reshape(-1, 64, 1, 1)
-                b = self.dense2(param1).reshape(-1, 64, 1, 1)
-                x = F.leaky_relu(x + a + b, 0.1)
+                a = self.dense1(param)
+                a = tf.reshape(a, (-1,1,1,64) )
 
-                x = F.leaky_relu(self.e0_conv0(x), 0.1)
-                x = e0 = F.leaky_relu(self.e0_conv1(x), 0.1)
+                b = self.dense2(param1)
+                b = tf.reshape(b, (-1,1,1,64) )
 
-                x = F.avg_pool2d(x, 2, 2)
-                x = F.leaky_relu(self.e1_conv0(x), 0.1)
-                x = e1 = F.leaky_relu(self.e1_conv1(x), 0.1)
+                x = tf.nn.leaky_relu(x+a+b, 0.1)
 
-                x = F.avg_pool2d(x, 2, 2)
-                x = F.leaky_relu(self.e2_conv0(x), 0.1)
-                x = e2 = F.leaky_relu(self.e2_conv1(x), 0.1)
+                x = tf.nn.leaky_relu(self.e0_conv0(x), 0.1)
+                x = e0 = tf.nn.leaky_relu(self.e0_conv1(x), 0.1)
 
-                x = F.avg_pool2d(x, 2, 2)
-                x = F.leaky_relu(self.e3_conv0(x), 0.1)
-                x = e3 = F.leaky_relu(self.e3_conv1(x), 0.1)
+                x = tf.nn.avg_pool(x, [1,2,2,1], [1,2,2,1], "VALID")
+                x = tf.nn.leaky_relu(self.e1_conv0(x), 0.1)
+                x = e1 = tf.nn.leaky_relu(self.e1_conv1(x), 0.1)
 
-                x = F.avg_pool2d(x, 2, 2)
-                x = F.leaky_relu(self.e4_conv0(x), 0.1)
-                x = e4 = F.leaky_relu(self.e4_conv1(x), 0.1)
+                x = tf.nn.avg_pool(x, [1,2,2,1], [1,2,2,1], "VALID")
+                x = tf.nn.leaky_relu(self.e2_conv0(x), 0.1)
+                x = e2 = tf.nn.leaky_relu(self.e2_conv1(x), 0.1)
 
-                x = F.avg_pool2d(x, 2, 2)
-                x = F.leaky_relu(self.center_conv0(x), 0.1)
-                x = F.leaky_relu(self.center_conv1(x), 0.1)
-                x = F.leaky_relu(self.center_conv2(x), 0.1)
-                x = F.leaky_relu(self.center_conv3(x), 0.1)
+                x = tf.nn.avg_pool(x, [1,2,2,1], [1,2,2,1], "VALID")
+                x = tf.nn.leaky_relu(self.e3_conv0(x), 0.1)
+                x = e3 = tf.nn.leaky_relu(self.e3_conv1(x), 0.1)
 
-                x = torch.cat((_resize2d_bilinear(x), e4), dim=1)
-                x = F.leaky_relu(self.d4_conv0(x), 0.1)
-                x = F.leaky_relu(self.d4_conv1(x), 0.1)
+                x = tf.nn.avg_pool(x, [1,2,2,1], [1,2,2,1], "VALID")
+                x = tf.nn.leaky_relu(self.e4_conv0(x), 0.1)
+                x = e4 = tf.nn.leaky_relu(self.e4_conv1(x), 0.1)
 
-                x = torch.cat((_resize2d_bilinear(x), e3), dim=1)
-                x = F.leaky_relu(self.d3_conv0(x), 0.1)
-                x = F.leaky_relu(self.d3_conv1(x), 0.1)
+                x = tf.nn.avg_pool(x, [1,2,2,1], [1,2,2,1], "VALID")
+                x = tf.nn.leaky_relu(self.center_conv0(x), 0.1)
+                x = tf.nn.leaky_relu(self.center_conv1(x), 0.1)
+                x = tf.nn.leaky_relu(self.center_conv2(x), 0.1)
+                x = tf.nn.leaky_relu(self.center_conv3(x), 0.1)
 
-                x = torch.cat((_resize2d_bilinear(x), e2), dim=1)
-                x = F.leaky_relu(self.d2_conv0(x), 0.1)
-                x = F.leaky_relu(self.d2_conv1(x), 0.1)
+                x = tf.concat( [nn.resize2d_bilinear(x), e4], -1 )
+                x = tf.nn.leaky_relu(self.d4_conv0(x), 0.1)
+                x = tf.nn.leaky_relu(self.d4_conv1(x), 0.1)
 
-                x = torch.cat((_resize2d_bilinear(x), e1), dim=1)
-                x = F.leaky_relu(self.d1_conv0(x), 0.1)
-                x = F.leaky_relu(self.d1_conv1(x), 0.1)
+                x = tf.concat( [nn.resize2d_bilinear(x), e3], -1 )
+                x = tf.nn.leaky_relu(self.d3_conv0(x), 0.1)
+                x = tf.nn.leaky_relu(self.d3_conv1(x), 0.1)
 
-                x = torch.cat((_resize2d_bilinear(x), e0), dim=1)
-                x = F.leaky_relu(self.d0_conv0(x), 0.1)
-                d0 = F.leaky_relu(self.d0_conv1(x), 0.1)
+                x = tf.concat( [nn.resize2d_bilinear(x), e2], -1 )
+                x = tf.nn.leaky_relu(self.d2_conv0(x), 0.1)
+                x = tf.nn.leaky_relu(self.d2_conv1(x), 0.1)
 
-                x = F.leaky_relu(self.out1x_conv0(d0), 0.1)
-                out1x = bgr + torch.tanh(self.out1x_conv1(x))
+                x = tf.concat( [nn.resize2d_bilinear(x), e1], -1 )
+                x = tf.nn.leaky_relu(self.d1_conv0(x), 0.1)
+                x = tf.nn.leaky_relu(self.d1_conv1(x), 0.1)
 
-                x = F.leaky_relu(self.dec2x_conv0(d0), 0.1)
-                x = F.leaky_relu(self.dec2x_conv1(x), 0.1)
-                d2x = _resize2d_bilinear(x)
+                x = tf.concat( [nn.resize2d_bilinear(x), e0], -1 )
+                x = tf.nn.leaky_relu(self.d0_conv0(x), 0.1)
+                x = d0 = tf.nn.leaky_relu(self.d0_conv1(x), 0.1)
 
-                x = F.leaky_relu(self.out2x_conv0(d2x), 0.1)
-                out2x = _resize2d_bilinear(out1x) + torch.tanh(self.out2x_conv1(x))
+                x = tf.nn.leaky_relu(self.out1x_conv0(x), 0.1)
+                x = self.out1x_conv1(x)
+                out1x = bgr + tf.nn.tanh(x)
 
-                x = F.leaky_relu(self.dec4x_conv0(d2x), 0.1)
-                x = F.leaky_relu(self.dec4x_conv1(x), 0.1)
-                d4x = _resize2d_bilinear(x)
+                x = d0
+                x = tf.nn.leaky_relu(self.dec2x_conv0(x), 0.1)
+                x = tf.nn.leaky_relu(self.dec2x_conv1(x), 0.1)
+                x = d2x = nn.resize2d_bilinear(x)
 
-                x = F.leaky_relu(self.out4x_conv0(d4x), 0.1)
-                return _resize2d_bilinear(out2x) + torch.tanh(self.out4x_conv1(x))
+                x = tf.nn.leaky_relu(self.out2x_conv0(x), 0.1)
+                x = self.out2x_conv1(x)
+
+                out2x = nn.resize2d_bilinear(out1x) + tf.nn.tanh(x)
+
+                x = d2x
+                x = tf.nn.leaky_relu(self.dec4x_conv0(x), 0.1)
+                x = tf.nn.leaky_relu(self.dec4x_conv1(x), 0.1)
+                x = d4x = nn.resize2d_bilinear(x)
+
+                x = tf.nn.leaky_relu(self.out4x_conv0(x), 0.1)
+                x = self.out4x_conv1(x)
+
+                out4x = nn.resize2d_bilinear(out2x) + tf.nn.tanh(x)
+
+                return out4x
 
         model_path = Path(__file__).parent / "FaceEnhancer.npy"
         if not model_path.exists():
-            raise FileNotFoundError(f"Unable to load {model_path.name}")
+            raise Exception("Unable to load FaceEnhancer.npy")
 
-        # A PyTorch module's parameters and operations must share a device.
-        # Keep the legacy argument for API compatibility; execution placement
-        # is therefore controlled by run_on_cpu.
-        self.place_model_on_cpu = bool(place_model_on_cpu)
-        self.device = torch.device("cpu") if run_on_cpu else nn.device
+        with tf.device ('/CPU:0' if place_model_on_cpu else nn.tf_default_device_name):
+            self.model = FaceEnhancer()
+            self.model.load_weights (model_path)
+        
+        with tf.device ('/CPU:0' if run_on_cpu else nn.tf_default_device_name):
+            self.model.build_for_run ([ (tf.float32, nn.get4Dshape (192,192,3) ),
+                                        (tf.float32, (None,1,) ),
+                                        (tf.float32, (None,1,) ),
+                                    ])
 
-        self.model = FaceEnhancerModel()
-        self.model.build()
-        self.model.to(self.device)
-        if not self.model.load_weights(model_path):
-            raise RuntimeError(f"Unable to load weights from {model_path}")
-        self.model.eval()
-
-    def _net_run(self, patch, param, param1):
-        """Convert an NHWC NumPy patch to NCHW for inference and back."""
-
-        def to_tensor(array, shape=None):
-            tensor = torch.as_tensor(np.ascontiguousarray(array), device=self.device, dtype=nn.floatx)
-            return tensor if shape is None else tensor.reshape(shape)
-
-        patch_tensor = to_tensor(patch).permute(0, 3, 1, 2)
-        with torch.inference_mode():
-            output = self.model(
-                patch_tensor,
-                to_tensor(param, (1, 1)),
-                to_tensor(param1, (1, 1)),
-            )
-        return output.permute(0, 2, 3, 1).cpu().numpy()
-
-    def enhance(self, inp_img, is_tanh=False, preserve_size=True):
-        """Enhance an HWC BGR float image, optionally preserving its size."""
-        if inp_img.ndim != 3 or inp_img.shape[2] != 3:
-            raise ValueError(f"Expected an HWC BGR image with 3 channels, got {inp_img.shape}")
-
-        inp_img = np.asarray(inp_img, dtype=np.float32)
+    def enhance (self, inp_img, is_tanh=False, preserve_size=True):
         if not is_tanh:
-            inp_img = np.clip(inp_img * 2.0 - 1.0, -1.0, 1.0)
+            inp_img = np.clip( inp_img * 2 -1, -1, 1 )
 
-        param = np.array([0.2], dtype=np.float32)
-        param1 = np.array([1.0], dtype=np.float32)
+        param = np.array([0.2])
+        param1 = np.array([1.0])
         up_res = 4
         patch_size = 192
-        patch_stride = patch_size // 2
+        patch_size_half = patch_size // 2
 
-        input_height, input_width, channels = inp_img.shape
-        height, width = input_height, input_width
+        ih,iw,ic = inp_img.shape
+        h,w,c = ih,iw,ic
 
-        top_padding = max(0, (patch_size - height) // 2)
-        bottom_padding = max(0, patch_size - height - top_padding)
-        left_padding = max(0, (patch_size - width) // 2)
-        right_padding = max(0, patch_size - width - left_padding)
+        th,tw = h*up_res, w*up_res
 
-        if top_padding or bottom_padding or left_padding or right_padding:
-            inp_img = np.pad(
-                inp_img,
-                ((top_padding, bottom_padding), (left_padding, right_padding), (0, 0)),
-                mode="constant",
-            )
-            height, width, channels = inp_img.shape
+        t_padding = 0
+        b_padding = 0
+        l_padding = 0
+        r_padding = 0
 
-        max_x = width - patch_size
-        max_y = height - patch_size
-        output = np.zeros((height * up_res, width * up_res, channels), dtype=np.float32)
-        divisor = np.zeros((height * up_res, width * up_res, 1), dtype=np.float32)
+        if h < patch_size:
+            t_padding = (patch_size-h)//2
+            b_padding = (patch_size-h) - t_padding
 
-        ramp = np.concatenate(
-            (
-                np.linspace(0.0, 1.0, patch_stride * up_res),
-                np.linspace(1.0, 0.0, patch_stride * up_res),
-            )
-        )
-        half_output_patch = patch_stride * up_res
+        if w < patch_size:
+            l_padding = (patch_size-w)//2
+            r_padding = (patch_size-w) - l_padding
 
-        y = 0
-        while True:
-            y_weights = ramp.copy()
-            if y == 0:
-                y_weights[:half_output_patch] = 1.0
-            if y == max_y:
-                y_weights[half_output_patch:] = 1.0
+        if t_padding != 0:
+            inp_img = np.concatenate ([ np.zeros ( (t_padding,w,c), dtype=np.float32 ), inp_img ], axis=0 )
+            h,w,c = inp_img.shape
 
-            x = 0
-            while True:
-                x_weights = ramp.copy()
-                if x == 0:
-                    x_weights[:half_output_patch] = 1.0
-                if x == max_x:
-                    x_weights[half_output_patch:] = 1.0
-                patch_mask = (y_weights[:, None] * x_weights[None, :])[..., None]
+        if b_padding != 0:
+            inp_img = np.concatenate ([ inp_img, np.zeros ( (b_padding,w,c), dtype=np.float32 ) ], axis=0 )
+            h,w,c = inp_img.shape
 
-                patch = inp_img[y:y + patch_size, x:x + patch_size, :]
-                enhanced = self._net_run(patch[None, ...], param, param1)[0]
-                output[
-                    y * up_res:(y + patch_size) * up_res,
-                    x * up_res:(x + patch_size) * up_res,
-                    :,
-                ] += enhanced * patch_mask
-                divisor[
-                    y * up_res:(y + patch_size) * up_res,
-                    x * up_res:(x + patch_size) * up_res,
-                    :,
-                ] += patch_mask
+        if l_padding != 0:
+            inp_img = np.concatenate ([ np.zeros ( (h,l_padding,c), dtype=np.float32 ), inp_img ], axis=1 )
+            h,w,c = inp_img.shape
 
-                if x == max_x:
+        if r_padding != 0:
+            inp_img = np.concatenate ([ inp_img, np.zeros ( (h,r_padding,c), dtype=np.float32 ) ], axis=1 )
+            h,w,c = inp_img.shape
+
+
+        i_max = w-patch_size+1
+        j_max = h-patch_size+1
+
+        final_img = np.zeros ( (h*up_res,w*up_res,c), dtype=np.float32 )
+        final_img_div = np.zeros ( (h*up_res,w*up_res,1), dtype=np.float32 )
+
+        x = np.concatenate ( [ np.linspace (0,1,patch_size_half*up_res), np.linspace (1,0,patch_size_half*up_res) ] )
+        x,y = np.meshgrid(x,x)
+        patch_mask = (x*y)[...,None]
+
+        j=0
+        while j < j_max:
+            i = 0
+            while i < i_max:
+                patch_img = inp_img[j:j+patch_size, i:i+patch_size,:]
+                x = self.model.run( [ patch_img[None,...], [param], [param1] ] )[0]
+                final_img    [j*up_res:(j+patch_size)*up_res, i*up_res:(i+patch_size)*up_res,:] += x*patch_mask
+                final_img_div[j*up_res:(j+patch_size)*up_res, i*up_res:(i+patch_size)*up_res,:] += patch_mask
+                if i == i_max-1:
                     break
-                x = min(x + patch_stride, max_x)
-
-            if y == max_y:
+                i = min( i+patch_size_half, i_max-1)
+            if j == j_max-1:
                 break
-            y = min(y + patch_stride, max_y)
+            j = min( j+patch_size_half, j_max-1)
 
-        divisor[divisor == 0] = 1.0
-        output /= divisor
+        final_img_div[final_img_div==0] = 1.0
+        final_img /= final_img_div
 
-        if top_padding or bottom_padding or left_padding or right_padding:
-            output = output[
-                top_padding * up_res:(height - bottom_padding) * up_res,
-                left_padding * up_res:(width - right_padding) * up_res,
-                :,
-            ]
+        if t_padding+b_padding+l_padding+r_padding != 0:
+            final_img = final_img [t_padding*up_res:(h-b_padding)*up_res, l_padding*up_res:(w-r_padding)*up_res,:]
 
         if preserve_size:
-            output = cv2.resize(
-                output,
-                (input_width, input_height),
-                interpolation=cv2.INTER_LANCZOS4,
-            )
+            final_img = cv2.resize (final_img, (iw,ih), interpolation=cv2.INTER_LANCZOS4)
 
         if not is_tanh:
-            output = np.clip(output / 2.0 + 0.5, 0.0, 1.0)
+            final_img = np.clip( final_img/2+0.5, 0, 1 )
 
-        return output
+        return final_img
+
+
+"""
+
+    def enhance (self, inp_img, is_tanh=False, preserve_size=True):
+        if not is_tanh:
+            inp_img = np.clip( inp_img * 2 -1, -1, 1 )
+
+        param = np.array([0.2])
+        param1 = np.array([1.0])
+        up_res = 4
+        patch_size = 192
+        patch_size_half = patch_size // 2
+
+        h,w,c = inp_img.shape
+
+        th,tw = h*up_res, w*up_res
+
+        preupscale_rate = 1.0
+
+        if h < patch_size or w < patch_size:
+            preupscale_rate = 1.0 / ( max(h,w) / patch_size )
+
+        if preupscale_rate != 1.0:
+            inp_img = cv2.resize (inp_img, ( int(w*preupscale_rate), int(h*preupscale_rate) ), interpolation=cv2.INTER_LANCZOS4)
+            h,w,c = inp_img.shape
+
+        i_max = w-patch_size+1
+        j_max = h-patch_size+1
+
+        final_img = np.zeros ( (h*up_res,w*up_res,c), dtype=np.float32 )
+        final_img_div = np.zeros ( (h*up_res,w*up_res,1), dtype=np.float32 )
+
+        x = np.concatenate ( [ np.linspace (0,1,patch_size_half*up_res), np.linspace (1,0,patch_size_half*up_res) ] )
+        x,y = np.meshgrid(x,x)
+        patch_mask = (x*y)[...,None]
+
+        j=0
+        while j < j_max:
+            i = 0
+            while i < i_max:
+                patch_img = inp_img[j:j+patch_size, i:i+patch_size,:]
+                x = self.model.run( [ patch_img[None,...], [param], [param1] ] )[0]
+                final_img    [j*up_res:(j+patch_size)*up_res, i*up_res:(i+patch_size)*up_res,:] += x*patch_mask
+                final_img_div[j*up_res:(j+patch_size)*up_res, i*up_res:(i+patch_size)*up_res,:] += patch_mask
+                if i == i_max-1:
+                    break
+                i = min( i+patch_size_half, i_max-1)
+            if j == j_max-1:
+                break
+            j = min( j+patch_size_half, j_max-1)
+
+        final_img_div[final_img_div==0] = 1.0
+        final_img /= final_img_div
+
+        if preserve_size:
+            final_img = cv2.resize (final_img, (w,h), interpolation=cv2.INTER_LANCZOS4)
+        else:
+            if preupscale_rate != 1.0:
+                final_img = cv2.resize (final_img, (tw,th), interpolation=cv2.INTER_LANCZOS4)
+
+        if not is_tanh:
+            final_img = np.clip( final_img/2+0.5, 0, 1 )
+
+        return final_img
+"""

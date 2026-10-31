@@ -7,7 +7,6 @@ class FaceType(IntEnum):
     FULL = 2
     FULL_NO_ALIGN = 3
     WHOLE_FACE = 4
-    CUSTOM = 5
     HEAD = 10
     HEAD_NO_ALIGN = 20
 
@@ -31,8 +30,7 @@ to_string_dict = { FaceType.HALF : 'half_face',
                    FaceType.WHOLE_FACE : 'whole_face',
                    FaceType.HEAD : 'head',
                    FaceType.HEAD_NO_ALIGN : 'head_no_align',
-                   FaceType.CUSTOM : 'mve_custom',
-
+                   
                    FaceType.MARK_ONLY :'mark_only',  
                  }
 

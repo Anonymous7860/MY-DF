@@ -5,15 +5,12 @@ from pathlib import Path
 import cv2
 import numpy as np
 from numpy import linalg as npla
-import torch
-import torch.nn.functional as F
 
 from facelib import FaceType, LandmarksProcessor
 from core.leras import nn
 
 """
 ported from https://github.com/1adrianb/face-alignment
-PyTorch port
 """
 class FANExtractor(object):
     def __init__ (self, landmarks_3D=False, place_model_on_cpu=False):
@@ -22,8 +19,8 @@ class FANExtractor(object):
         if not model_path.exists():
             raise Exception("Unable to load FANExtractor model")
 
-        # Initialize Leras
-        nn.initialize(data_format="NCHW")
+        nn.initialize(data_format="NHWC")
+        tf = nn.tf
 
         class ConvBlock(nn.ModelBase):
             def on_build(self, in_planes, out_planes):
@@ -49,22 +46,22 @@ class FANExtractor(object):
             def forward(self, input):
                 x = input
                 x = self.bn1(x)
-                x = F.relu(x)
+                x = tf.nn.relu(x)
                 x = out1 = self.conv1(x)
 
                 x = self.bn2(x)
-                x = F.relu(x)
+                x = tf.nn.relu(x)
                 x = out2 = self.conv2(x)
 
                 x = self.bn3(x)
-                x = F.relu(x)
+                x = tf.nn.relu(x)
                 x = out3 = self.conv3(x)
 
-                x = torch.cat([out1, out2, out3], dim=1) # Dim 1 is Channels in NCHW
+                x = tf.concat ([out1, out2, out3], axis=-1)
 
                 if self.in_planes != self.out_planes:
                     downsample = self.down_bn1(input)
-                    downsample = F.relu (downsample)
+                    downsample = tf.nn.relu (downsample)
                     downsample = self.down_conv1 (downsample)
                     x = x + downsample
                 else:
@@ -87,14 +84,13 @@ class FANExtractor(object):
             def forward(self, input):
                 up1 = self.b1(input)
 
-                low1 = F.avg_pool2d(input, 2, 2) # stride 2, pool 2
+                low1 = tf.nn.avg_pool(input, [1,2,2,1], [1,2,2,1], 'VALID')
                 low1 = self.b2 (low1)
 
                 low2 = self.b2_plus(low1)
                 low3 = self.b3(low2)
 
-                # up2 = nn.upsample2d(low3) -> Nearest neighbor upscale
-                up2 = F.interpolate(low3, scale_factor=2, mode='nearest')
+                up2 = nn.upsample2d(low3)
 
                 return up1+up2
 
@@ -103,7 +99,7 @@ class FANExtractor(object):
                 super().__init__(name='FAN')
 
             def on_build(self):
-                self.conv1 = nn.Conv2D (3, 64, kernel_size=7, strides=2, padding='SAME') # 7x7 stride 2 SAME
+                self.conv1 = nn.Conv2D (3, 64, kernel_size=7, strides=2, padding='SAME')
                 self.bn1 = nn.BatchNorm2D(64)
 
                 self.conv2 = ConvBlock(64, 128)
@@ -131,18 +127,13 @@ class FANExtractor(object):
                         self.al += [ nn.Conv2D (68, 256, kernel_size=1, strides=1, padding='VALID') ]
 
             def forward(self, inp) :
-                # inp can be list
-                if isinstance(inp, (list, tuple)):
-                    x = inp[0]
-                else:
-                    x = inp
-
+                x, = inp
                 x = self.conv1(x)
                 x = self.bn1(x)
-                x = F.relu(x)
+                x = tf.nn.relu(x)
 
                 x = self.conv2(x)
-                x = F.avg_pool2d(x, 2, 2)
+                x = tf.nn.avg_pool(x, [1,2,2,1], [1,2,2,1], 'VALID')
                 x = self.conv3(x)
                 x = self.conv4(x)
 
@@ -153,71 +144,39 @@ class FANExtractor(object):
                     ll = self.top_m[i] (ll)
                     ll = self.conv_last[i] (ll)
                     ll = self.bn_end[i] (ll)
-                    ll = F.relu(ll)
+                    ll = tf.nn.relu(ll)
                     tmp_out = self.l[i](ll)
                     outputs.append(tmp_out)
                     if i < 4 - 1:
                         ll = self.bl[i](ll)
                         previous = previous + ll + self.al[i](tmp_out)
                 x = outputs[-1]
-                # x is NCHW.
-                # TF code transposed (0,3,1,2) -> NCHW from NHWC?
-                # or NHWC from NCHW?
-                # TF `Conv2D` outputs NHWC.
-                # `get_pts` expects `a_ch, a_h, a_w`. (C, H, W).
-                # So if TF tranposed to (0,3,1,2), it made it NCHW (0=N, 3=C, 1=H, 2=W).
-                # PyTorch x is already NCHW.
+                x = tf.transpose(x, (0,3,1,2) )
                 return x
 
-        # Initialize model
-        self.model = FAN()
-        self.model.build()
+        e = None
         if place_model_on_cpu:
-            self.model = self.model.cpu()
-        else:
-            self.model = self.model.to(nn.device)
-             
+            e = tf.device("/CPU:0")
+
+        if e is not None: e.__enter__()
+        self.model = FAN()
         self.model.load_weights(str(model_path))
-        self.model.eval()
-        self.device = next(self.model.parameters()).device
+        if e is not None: e.__exit__(None,None,None)
 
-        if self.device.type == 'cuda':
-            torch.backends.cudnn.benchmark = True
-
-    def _run_batch(self, images):
-        if not images.flags["C_CONTIGUOUS"]:
-            images = np.ascontiguousarray(images)
-
-        x = torch.from_numpy(images)
-        if x.dtype == torch.uint8:
-            x = x.to(self.device, non_blocking=True).float().div_(255.0)
-        else:
-            x = x.to(self.device, non_blocking=True)
-            if x.dtype != torch.float32:
-                x = x.float()
-
-        x = x.permute(0, 3, 1, 2).contiguous()
-
-        with torch.no_grad():
-            use_amp = self.device.type == 'cuda'
-            with torch.amp.autocast('cuda', enabled=use_amp):
-                predicted = self.model(x)
-
-        return predicted.float().cpu().numpy()
+        self.model.build_for_run ([ ( tf.float32, (None,256,256,3) ) ])
 
     def extract (self, input_image, rects, second_pass_extractor=None, is_bgr=True, multi_sample=False):
         if len(rects) == 0:
             return []
 
         if is_bgr:
-            input_image = input_image[:,:,::-1].copy()
+            input_image = input_image[:,:,::-1]
             is_bgr = False
 
-        rect_predictions = {i: [] for i in range(len(rects))}
-        all_crops = []
-        crop_metadata = []
+        (h, w, ch) = input_image.shape
 
-        for rect_idx, (left, top, right, bottom) in enumerate(rects):
+        landmarks = []
+        for (left, top, right, bottom) in rects:
             scale = (right - left + bottom - top) / 195.0
 
             center = np.array( [ (left + right) / 2.0, (top + bottom) / 2.0] )
@@ -230,28 +189,29 @@ class FANExtractor(object):
                              center + [-1,1],
                            ]
 
+            images = []
+            ptss = []
+
             try:
                 for c in centers:
-                    all_crops.append(self.crop(input_image, c, scale))
-                    crop_metadata.append((rect_idx, c.copy(), scale))
+                    images += [ self.crop(input_image, c, scale)  ]
+
+                images = np.stack (images)
+                images = images.astype(np.float32) / 255.0
+
+                predicted = []
+                for i in range( len(images) ):
+                    predicted += [ self.model.run ( [ images[i][None,...] ]  )[0] ]
+
+                predicted = np.stack(predicted)
+
+                for i, pred in enumerate(predicted):
+                    ptss += [ self.get_pts_from_predict ( pred, centers[i], scale) ]
+                pts_img = np.mean ( np.array(ptss), 0 )
+
+                landmarks.append (pts_img)
             except:
-                traceback.print_exc()
-
-        if len(all_crops) == 0:
-            landmarks = [None] * len(rects)
-        else:
-            predicted = self._run_batch(np.stack(all_crops))
-
-            for pred, (rect_idx, center, scale) in zip(predicted, crop_metadata):
-                rect_predictions[rect_idx].append(self.get_pts_from_predict(pred, center, scale))
-
-            landmarks = []
-            for rect_idx in range(len(rects)):
-                ptss = rect_predictions[rect_idx]
-                if len(ptss) != 0:
-                    landmarks.append(np.mean(np.array(ptss), 0))
-                else:
-                    landmarks.append(None)
+                landmarks.append (None)
 
         if second_pass_extractor is not None:
             for i, lmrks in enumerate(landmarks):
@@ -269,117 +229,6 @@ class FANExtractor(object):
 
         return landmarks
 
-    @staticmethod
-    def _saenxt_heatmap_metrics(prediction):
-        channels, height, width = prediction.shape
-        flat = prediction.reshape(channels, height * width)
-        peaks = np.max(flat, axis=1)
-        means = np.mean(flat, axis=1)
-        stds = np.std(flat, axis=1)
-        peak_z = (peaks - means) / np.maximum(stds, 1e-6)
-
-        peak_indices = np.argmax(flat, axis=1)
-        peak_x = peak_indices % width
-        peak_y = peak_indices // width
-        edge_hits = (peak_x <= 0) | (peak_x >= width - 1) | (peak_y <= 0) | (peak_y >= height - 1)
-
-        if flat.shape[1] > 1:
-            second_peaks = np.partition(flat, -2, axis=1)[:, -2]
-            peak_margin = peaks - second_peaks
-        else:
-            peak_margin = peaks
-
-        return {
-            'peak_z_median': float(np.median(peak_z)),
-            'peak_z_min': float(np.min(peak_z)),
-            'peak_margin_median': float(np.median(peak_margin)),
-            'edge_fraction': float(np.mean(edge_hits)),
-        }
-
-    def _run_batch_chunked(self, images, max_batch_size):
-        max_batch_size = max(1, int(max_batch_size or len(images)))
-        outputs = []
-
-        def run_chunk(chunk):
-            try:
-                outputs.append(self._run_batch(np.stack(chunk)))
-            except (torch.cuda.OutOfMemoryError, RuntimeError) as err:
-                is_oom = isinstance(err, torch.cuda.OutOfMemoryError) or 'out of memory' in str(err).lower()
-                if not is_oom or len(chunk) == 1:
-                    raise
-                if self.device.type == 'cuda':
-                    torch.cuda.empty_cache()
-                midpoint = len(chunk) // 2
-                run_chunk(chunk[:midpoint])
-                run_chunk(chunk[midpoint:])
-
-        for start in range(0, len(images), max_batch_size):
-            run_chunk(images[start:start + max_batch_size])
-
-        return np.concatenate(outputs, axis=0)
-
-    def extract_batch_saenxt(self, items, multi_sample=False, max_batch_size=None):
-        """Batch landmarks across frames without copying complete source images."""
-        landmarks_result = [[None] * len(rects) for _, rects in items]
-        metrics_result = [[None] * len(rects) for _, rects in items]
-        predictions_by_rect = {}
-        metrics_by_rect = {}
-        all_crops = []
-        crop_metadata = []
-
-        for item_idx, (input_image, rects) in enumerate(items):
-            for rect_idx, (left, top, right, bottom) in enumerate(rects):
-                scale = (right - left + bottom - top) / 195.0
-                center = np.array([(left + right) / 2.0, (top + bottom) / 2.0])
-                centers = [center]
-                if multi_sample:
-                    centers += [center + [-1, -1],
-                                center + [1, -1],
-                                center + [1, 1],
-                                center + [-1, 1]]
-
-                try:
-                    for sample_center in centers:
-                        crop = self.crop(input_image, sample_center, scale)
-                        crop = crop[:, :, ::-1].copy()
-                        all_crops.append(crop)
-                        crop_metadata.append((item_idx, rect_idx, sample_center.copy(), scale))
-                except Exception:
-                    traceback.print_exc()
-
-        if len(all_crops) == 0:
-            return landmarks_result, metrics_result
-
-        predicted = self._run_batch_chunked(all_crops, max_batch_size)
-        for pred, (item_idx, rect_idx, center, scale) in zip(predicted, crop_metadata):
-            key = (item_idx, rect_idx)
-            predictions_by_rect.setdefault(key, []).append(self.get_pts_from_predict(pred, center, scale))
-            metrics_by_rect.setdefault(key, []).append(self._saenxt_heatmap_metrics(pred))
-
-        for (item_idx, rect_idx), point_samples in predictions_by_rect.items():
-            points = np.asarray(point_samples, dtype=np.float32)
-            mean_points = np.mean(points, axis=0)
-            landmarks_result[item_idx][rect_idx] = mean_points
-
-            sample_metrics = metrics_by_rect[(item_idx, rect_idx)]
-            rect = items[item_idx][1][rect_idx]
-            rect_size = max(1.0, float(max(rect[2] - rect[0], rect[3] - rect[1])))
-            if len(points) > 1:
-                spread = np.linalg.norm(points - mean_points[None, ...], axis=2)
-                sample_spread = float(np.median(spread) / rect_size)
-            else:
-                sample_spread = 0.0
-
-            metrics_result[item_idx][rect_idx] = {
-                'peak_z_median': float(np.mean([m['peak_z_median'] for m in sample_metrics])),
-                'peak_z_min': float(np.min([m['peak_z_min'] for m in sample_metrics])),
-                'peak_margin_median': float(np.mean([m['peak_margin_median'] for m in sample_metrics])),
-                'edge_fraction': float(np.max([m['edge_fraction'] for m in sample_metrics])),
-                'sample_spread': sample_spread,
-            }
-
-        return landmarks_result, metrics_result
-
     def transform(self, point, center, scale, resolution):
         pt = np.array ( [point[0], point[1], 1.0] )
         h = 200.0 * scale
@@ -392,14 +241,14 @@ class FANExtractor(object):
         return np.matmul (m, pt)[0:2]
 
     def crop(self, image, center, scale, resolution=256.0):
-        ul = self.transform([1, 1], center, scale, resolution).astype( int )
-        br = self.transform([resolution, resolution], center, scale, resolution).astype( int )
+        ul = self.transform([1, 1], center, scale, resolution).astype( np.int )
+        br = self.transform([resolution, resolution], center, scale, resolution).astype( np.int )
 
         if image.ndim > 2:
             newDim = np.array([br[1] - ul[1], br[0] - ul[0], image.shape[2]], dtype=np.int32)
             newImg = np.zeros(newDim, dtype=np.uint8)
         else:
-            newDim = np.array([br[1] - ul[1], br[0] - ul[0]], dtype=int)
+            newDim = np.array([br[1] - ul[1], br[0] - ul[0]], dtype=np.int)
             newImg = np.zeros(newDim, dtype=np.uint8)
         ht = image.shape[0]
         wd = image.shape[1]
@@ -413,11 +262,10 @@ class FANExtractor(object):
         return newImg
 
     def get_pts_from_predict(self, a, center, scale):
-        # a: (C, H, W)
         a_ch, a_h, a_w = a.shape
 
         b = a.reshape ( (a_ch, a_h*a_w) )
-        c = b.argmax(1).reshape ( (a_ch, 1) ).repeat(2, axis=1).astype(np.float64) # float compatibility
+        c = b.argmax(1).reshape ( (a_ch, 1) ).repeat(2, axis=1).astype(np.float)
         c[:,0] %= a_w
         c[:,1] = np.apply_along_axis ( lambda x: np.floor(x / a_w), 0, c[:,1] )
 
