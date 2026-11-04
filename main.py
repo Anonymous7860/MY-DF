@@ -49,14 +49,14 @@ if __name__ == "__main__":
     p.add_argument('--detector', dest="detector", choices=['s3fd','manual'], default=None, help="Type of detector.")
     p.add_argument('--input-dir', required=True, action=fixPathAction, dest="input_dir", help="Input directory. A directory containing the files you wish to process.")
     p.add_argument('--output-dir', required=True, action=fixPathAction, dest="output_dir", help="Output directory. This is where the extracted files will be stored.")
-    p.add_argument('--output-debug', action="store_true", dest="output_debug", default=None, help="Writes debug images to <output-dir>_debug\\ directory.")
-    p.add_argument('--no-output-debug', action="store_false", dest="output_debug", default=None, help="Don't writes debug images to <output-dir>_debug\\ directory.")
+    p.add_argument('--output-debug', action="store_true", dest="output_debug", default=None, help="Writes debug images to <output-dir>_debug\ directory.")
+    p.add_argument('--no-output-debug', action="store_false", dest="output_debug", default=None, help="Don't writes debug images to <output-dir>_debug\ directory.")
     p.add_argument('--face-type', dest="face_type", choices=['half_face', 'full_face', 'whole_face', 'head', 'mark_only'], default=None)
     p.add_argument('--max-faces-from-image', type=int, dest="max_faces_from_image", default=None, help="Max faces from image.")    
     p.add_argument('--image-size', type=int, dest="image_size", default=None, help="Output image size.")
     p.add_argument('--jpeg-quality', type=int, dest="jpeg_quality", default=None, help="Jpeg quality.")    
     p.add_argument('--manual-fix', action="store_true", dest="manual_fix", default=False, help="Enables manual extract only frames where faces were not recognized.")
-    p.add_argument('--manual-output-debug-fix', action="store_true", dest="manual_output_debug_fix", default=False, help="Performs manual reextract input-dir frames which were deleted from [output_dir]_debug\\ dir.")
+    p.add_argument('--manual-output-debug-fix', action="store_true", dest="manual_output_debug_fix", default=False, help="Performs manual reextract input-dir frames which were deleted from [output_dir]_debug\ dir.")
     p.add_argument('--manual-window-size', type=int, dest="manual_window_size", default=1368, help="Manual fix window size. Default: 1368.")
     p.add_argument('--cpu-only', action="store_true", dest="cpu_only", default=False, help="Extract on CPU..")
     p.add_argument('--force-gpu-idxs', dest="force_gpu_idxs", default=None, help="Force to choose GPU indexes separated by comma.")
@@ -98,10 +98,6 @@ if __name__ == "__main__":
             io.log_info ("Performing faceset unpacking...\r\n")
             from samplelib import PackedFaceset
             PackedFaceset.unpack( Path(arguments.input_dir) )
-            
-        if arguments.export_faceset_mask:
-            io.log_info ("Exporting faceset mask..\r\n")
-            Util.export_faceset_mask( Path(arguments.input_dir) )
 
     p = subparsers.add_parser( "util", help="Utilities.")
     p.add_argument('--input-dir', required=True, action=fixPathAction, dest="input_dir", help="Input directory. A directory containing the files you wish to process.")
@@ -111,7 +107,6 @@ if __name__ == "__main__":
     p.add_argument('--restore-faceset-metadata', action="store_true", dest="restore_faceset_metadata", default=False, help="Restore faceset metadata to file. Image filenames must be the same as used with save.")
     p.add_argument('--pack-faceset', action="store_true", dest="pack_faceset", default=False, help="")
     p.add_argument('--unpack-faceset', action="store_true", dest="unpack_faceset", default=False, help="")
-    p.add_argument('--export-faceset-mask', action="store_true", dest="export_faceset_mask", default=False, help="")
 
     p.set_defaults (func=process_util)
 
@@ -276,11 +271,11 @@ if __name__ == "__main__":
         from mainscripts import FacesetResizer
         FacesetResizer.process_folder ( Path(arguments.input_dir) )
     p.set_defaults(func=process_faceset_resizer)
-
+    
     def process_dev_test(arguments):
         osex.set_process_lowest_prio()
         from mainscripts import dev_misc
-        dev_misc.dev_gen_mask_files( arguments.input_dir )
+        dev_misc.dev_test( arguments.input_dir )
 
     p = subparsers.add_parser( "dev_test", help="")
     p.add_argument('--input-dir', required=True, action=fixPathAction, dest="input_dir")
