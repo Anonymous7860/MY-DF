@@ -68,7 +68,7 @@ def cut_video ( input_file, from_time=None, to_time=None, audio_track_id=None, b
     if bitrate is None:
         bitrate = max (1, io.input_int ("Bitrate of output file in MB/s", 25) )
 
-    kwargs = {"c:v": "libx264",
+    kwargs = {"c:v": "h264_nvenc",
               "b:v": "%dM" %(bitrate),
               "pix_fmt": "yuv420p",
              }
@@ -237,12 +237,12 @@ def video_from_sequence( input_dir, output_file, reference_file=None, ext=None, 
     output_kwargs = {}
 
     if lossless:
-        output_kwargs.update ({"c:v": "libx264",
+        output_kwargs.update ({"c:v": "h264_nvenc",
                                "crf": "0",
                                "pix_fmt": "yuv420p",
                               })
     else:
-        output_kwargs.update ({"c:v": "libx264",
+        output_kwargs.update ({"c:v": "h264_nvenc",
                                "b:v": "%dM" %(bitrate),
                                "pix_fmt": "yuv420p",
                               })
